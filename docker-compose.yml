@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  # 1. Init container to download models
+  model-downloader:
+    image: alpine:latest
+    container_name: model-downloader
+    volumes:
+      - ./models:/models
+    # Installs curl, checks if files exist, and downloads them if they don't.
+    # This prevents re-downloading 7GB files every time you restart the stack.
+    command: >
+      sh -c "
+        apk add --no-cache curl &&
+        echo 'Checking for model files...' &&
+        if [ ! -f /models/Qwen3.5-9B-UD-Q4_K_XL.gguf ]; then
+          echo 'Downloading Qwen3.5-9B...';
+          curl -L -o /models/Qwen3.5-9B-UD-Q4_K_XL.gguf https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf;
+        else
+          echo 'Qwen3.5-9B already exists. Skipping...';
+        fi &&
+        if [ ! -f /models/mmproj-F16.gguf ]; then
+          echo 'Downloading mmproj...';
+          curl -L -o /models/mmproj-F16.gguf https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf;
+        else
+          echo 'mmproj already exists. Skipping...';
+        fi &&
+        echo 'All models are ready!'
+      "
+
+  # 2. Llama.cpp Server
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-vulkan
+    container_name: llama-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/models
+    devices:
+      - /dev/dri:/dev/dri 
+    command: >
+      -m /models/Qwen3.5-9B-UD-Q4_K_XL.gguf
+      --mmproj /models/mmproj-F16.gguf
+      --host 0.0.0.0
+      --port 8000
+      -ngl 99
+    # Wait for the downloader to finish completely before starting
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
+
+  # 3. Cloudflare Tunnel
+  tunnel:
+    container_name: cloudflared-tunnel
+    image: cloudflare/cloudflared
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    # Standard depends_on just waits for the server container to start
+    depends_on:
+      - llama-server
