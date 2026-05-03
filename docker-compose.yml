@@ -13,15 +13,15 @@ services:
       sh -c "
         apk add --no-cache curl &&
         echo 'Checking for model files...' &&
-        if [ ! -f /models/Qwen3.5-9B-UD-Q4_K_XL.gguf ]; then
-          echo 'Downloading Qwen3.5-9B...';
-          curl -L -o /models/Qwen3.5-9B-UD-Q4_K_XL.gguf https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf;
+        if [ ! -f /models/gemma-4-E4B-it-UD-Q4_K_XL.gguf ]; then
+          echo 'Downloading gemma-4-E4B-it...';
+          curl -L -o /models/gemma-4-E4B-it-UD-Q4_K_XL.gguf https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-UD-Q4_K_XL.gguf;
         else
-          echo 'Qwen3.5-9B already exists. Skipping...';
+          echo 'gemma-4-E4B-it already exists. Skipping...';
         fi &&
         if [ ! -f /models/mmproj-F16.gguf ]; then
           echo 'Downloading mmproj...';
-          curl -L -o /models/mmproj-F16.gguf https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-F16.gguf;
+          curl -L -o /models/mmproj-F16.gguf https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/mmproj-F16.gguf;
         else
           echo 'mmproj already exists. Skipping...';
         fi &&
@@ -40,7 +40,7 @@ services:
     devices:
       - /dev/dri:/dev/dri 
     command: >
-      -m /models/Qwen3.5-9B-UD-Q4_K_XL.gguf
+      -m /models/gemma-4-E4B-it-UD-Q4_K_XL.gguf
       --mmproj /models/mmproj-F16.gguf
       --host 0.0.0.0
       --port 8000
