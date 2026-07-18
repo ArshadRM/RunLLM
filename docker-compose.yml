@@ -1,64 +1,90 @@
-version: '3.8'
-
 services:
-  # 1. Init container to download models
+  # 1. Init container to download models dynamically
   model-downloader:
     image: alpine:latest
     container_name: model-downloader
     volumes:
       - ./models:/models
-    # Installs curl, checks if files exist, and downloads them if they don't.
-    # This prevents re-downloading 7GB files every time you restart the stack.
+    env_file:
+      - .env
     command: >
       sh -c "
         apk add --no-cache curl &&
-        echo 'Checking for model files...' &&
-        if [ ! -f /models/gemma-4-E4B-it-UD-Q4_K_XL.gguf ]; then
-          echo 'Downloading gemma-4-E4B-it...';
-          curl -L -o /models/gemma-4-E4B-it-UD-Q4_K_XL.gguf https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-UD-Q4_K_XL.gguf;
-        else
-          echo 'gemma-4-E4B-it already exists. Skipping...';
+        echo \"Checking for model files...\" &&
+        
+        # Download core text model if provided
+        if [ -n \"\$MODEL_URL\" ]; then
+          CLEAN_MODEL_URL=\$(echo \"\$MODEL_URL\" | sed 's|/blob/|/resolve/|g') &&
+          MODEL_FILE=\$(basename \"\$CLEAN_MODEL_URL\") &&
+          
+          if [ ! -f \"/models/\$MODEL_FILE\" ]; then
+            echo \"Downloading \$MODEL_FILE from \$CLEAN_MODEL_URL...\" &&
+            curl -L -o \"/models/\$MODEL_FILE\" \"\$CLEAN_MODEL_URL\";
+          else
+            echo \"\$MODEL_FILE already exists. Skipping...\" ;
+          fi
         fi &&
-        if [ ! -f /models/mmproj-F16.gguf ]; then
-          echo 'Downloading mmproj...';
-          curl -L -o /models/mmproj-F16.gguf https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/mmproj-F16.gguf;
+        
+        # Download optional vision project model only if URL is provided
+        if [ -n \"\$MMPROJ_URL\" ]; then
+          CLEAN_MMPROJ_URL=\$(echo \"\$MMPROJ_URL\" | sed 's|/blob/|/resolve/|g') &&
+          MMPROJ_FILE=\$(basename \"\$CLEAN_MMPROJ_URL\") &&
+          
+          if [ ! -f \"/models/\$MMPROJ_FILE\" ]; then
+            echo \"Downloading \$MMPROJ_FILE from \$CLEAN_MMPROJ_URL...\" &&
+            curl -L -o \"/models/\$MMPROJ_FILE\" \"\$CLEAN_MMPROJ_URL\";
+          else
+            echo \"\$MMPROJ_FILE already exists. Skipping...\" ;
+          fi
         else
-          echo 'mmproj already exists. Skipping...';
+          echo \"No MMPROJ_URL provided. Skipping vision model download.\";
         fi &&
-        echo 'All models are ready!'
+        
+        echo 'Model download stage complete!'
       "
 
-  # 2. Llama.cpp Server
+  # 2. Llama.cpp Server (NVIDIA CUDA Optimized)
   llama-server:
-    image: ghcr.io/ggml-org/llama.cpp:server-vulkan
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: llama-server
     restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
       - ./models:/models
-    devices:
-      - /dev/dri:/dev/dri 
+    env_file:
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    entrypoint: ["/bin/sh", "-c"]
     command: >
-      -m /models/gemma-4-E4B-it-UD-Q4_K_XL.gguf
-      --mmproj /models/mmproj-F16.gguf
-      --host 0.0.0.0
-      --port 8000
-      -ngl 99
-      --no-mmproj-offload
-    # Wait for the downloader to finish completely before starting
+      \"
+        # Extract filename from the model URL
+        MODEL_FILE=\\\$(basename \\\"\\\$MODEL_URL\\\") &&
+        
+        # Intelligently derive the alias by pulling the base name without the extension
+        MODEL_ALIAS=\\\$(echo \\\"\\\$MODEL_FILE\\\" | sed 's/\\.gguf\\\$//i') &&
+        echo \\\"Derived model alias: \\\$MODEL_ALIAS\\\" &&
+        
+        # Build command with explicit model location and derived alias string
+        CMD_ARGS=\\\"-m /models/\\\$MODEL_FILE --alias \\\$MODEL_ALIAS \\\$LLAMA_ARGS\\\" &&
+        
+        # Append mmproj flag conditionally if vision environment link exists
+        if [ -n \\\"\\\$MMPROJ_URL\\\" ]; then
+          MMPROJ_FILE=\\\$(basename \\\"\\\$MMPROJ_URL\\\") &&
+          CMD_ARGS=\\\"\\\$CMD_ARGS --mmproj /models/\\\$MMPROJ_FILE --no-mmproj-offload\\\" &&
+          echo \\\"Starting llama-server with vision capabilities...\\\" ;
+        else
+          echo \\\"Starting llama-server in text-only mode...\\\" ;
+        fi &&
+        
+        exec /llama-server \\\$CMD_ARGS
+      \"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
-
-  # 3. Cloudflare Tunnel
-  tunnel:
-    container_name: cloudflared-tunnel
-    image: cloudflare/cloudflared
-    restart: unless-stopped
-    command: tunnel run
-    environment:
-      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
-    # Standard depends_on just waits for the server container to start
-    depends_on:
-      - llama-server
