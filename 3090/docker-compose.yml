@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # 1. Init container to download models dynamically
+  model-downloader:
+    image: alpine:latest
+    container_name: model-downloader
+    volumes:
+      - ./models:/models
+    environment:
+      - MODEL_URL=${MODEL_URL}
+      - MMPROJ_URL=${MMPROJ_URL:-}
+    env_file:
+      - .env
+    command: >
+      sh -c "
+        apk add --no-cache curl &&
+        echo \"Checking for model files...\" &&
+        
+        # Download core text model if provided
+        if [ -n \"\$MODEL_URL\" ]; then
+          # Fix common Hugging Face copy-paste mistakes by changing /blob/ to /resolve/
+          CLEAN_MODEL_URL=\$(echo \"\$MODEL_URL\" | sed 's|/blob/|/resolve/|g') &&
+          MODEL_FILE=\$(basename \"\$CLEAN_MODEL_URL\") &&
+          
+          if [ ! -f \"/models/\$MODEL_FILE\" ]; then
+            echo \"Downloading \$MODEL_FILE from \$CLEAN_MODEL_URL...\" &&
+            curl -L -o \"/models/\$MODEL_FILE\" \"\$CLEAN_MODEL_URL\";
+          else
+            echo \"\$MODEL_FILE already exists. Skipping...\" ;
+          fi
+        fi &&
+        
+        # Download optional vision project model only if URL is provided
+        if [ -n \"\$MMPROJ_URL\" ]; then
+          CLEAN_MMPROJ_URL=\$(echo \"\$MMPROJ_URL\" | sed 's|/blob/|/resolve/|g') &&
+          MMPROJ_FILE=\$(basename \"\$CLEAN_MMPROJ_URL\") &&
+          
+          if [ ! -f \"/models/\$MMPROJ_FILE\" ]; then
+            echo \"Downloading \$MMPROJ_FILE from \$CLEAN_MMPROJ_URL...\" &&
+            curl -L -o \"/models/\$MMPROJ_FILE\" \"\$CLEAN_MMPROJ_URL\";
+          else
+            echo \"\$MMPROJ_FILE already exists. Skipping...\" ;
+          fi
+        else
+          echo \"No MMPROJ_URL provided. Skipping vision model download.\";
+        fi &&
+        
+        echo 'Model download stage complete!'
+      "
+
+  # 2. Llama.cpp Server (NVIDIA CUDA Optimized)
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: llama-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/models
+    environment:
+      - MODEL_URL=${MODEL_URL}
+      - MMPROJ_URL=${MMPROJ_URL:-}
+      - LLAMA_ARGS=${LLAMA_ARGS}
+    env_file:
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "
+        # Extract filename from the model URL
+        MODEL_FILE=\$(basename \"\$MODEL_URL\") &&
+        
+        # Intelligently derive the alias by pulling the base name without the extension
+        MODEL_ALIAS=\$(echo \"\$MODEL_FILE\" | sed 's/\.gguf\$//i') &&
+        echo \"Derived model alias: \$MODEL_ALIAS\" &&
+        
+        # Build command with explicit model location and derived alias string
+        CMD_ARGS=\"-m /models/\$MODEL_FILE --alias \$MODEL_ALIAS \$LLAMA_ARGS\" &&
+        
+        # Append mmproj flag conditionally if vision environment link exists
+        if [ -n \"\$MMPROJ_URL\" ]; then
+          MMPROJ_FILE=\$(basename \"\$MMPROJ_URL\") &&
+          CMD_ARGS=\"\$CMD_ARGS --mmproj /models/\$MMPROJ_FILE --no-mmproj-offload\" &&
+          echo \"Starting llama-server with vision capabilities...\" ;
+        else
+          echo \"Starting llama-server in text-only mode...\" ;
+        fi &&
+        
+        exec /llama-server \$CMD_ARGS
+      "
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
