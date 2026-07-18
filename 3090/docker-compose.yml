@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 1. Init container to download models dynamically
   model-downloader:
@@ -7,9 +5,6 @@ services:
     container_name: model-downloader
     volumes:
       - ./models:/models
-    environment:
-      - MODEL_URL=${MODEL_URL}
-      - MMPROJ_URL=${MMPROJ_URL:-}
     env_file:
       - .env
     command: >
@@ -19,7 +14,6 @@ services:
         
         # Download core text model if provided
         if [ -n \"\$MODEL_URL\" ]; then
-          # Fix common Hugging Face copy-paste mistakes by changing /blob/ to /resolve/
           CLEAN_MODEL_URL=\$(echo \"\$MODEL_URL\" | sed 's|/blob/|/resolve/|g') &&
           MODEL_FILE=\$(basename \"\$CLEAN_MODEL_URL\") &&
           
@@ -58,10 +52,6 @@ services:
       - "8000:8000"
     volumes:
       - ./models:/models
-    environment:
-      - MODEL_URL=${MODEL_URL}
-      - MMPROJ_URL=${MMPROJ_URL:-}
-      - LLAMA_ARGS=${LLAMA_ARGS}
     env_file:
       - .env
     deploy:
@@ -73,28 +63,28 @@ services:
               capabilities: [gpu]
     entrypoint: ["/bin/sh", "-c"]
     command: >
-      "
+      \"
         # Extract filename from the model URL
-        MODEL_FILE=\$(basename \"\$MODEL_URL\") &&
+        MODEL_FILE=\\\$(basename \\\"\\\$MODEL_URL\\\") &&
         
         # Intelligently derive the alias by pulling the base name without the extension
-        MODEL_ALIAS=\$(echo \"\$MODEL_FILE\" | sed 's/\.gguf\$//i') &&
-        echo \"Derived model alias: \$MODEL_ALIAS\" &&
+        MODEL_ALIAS=\\\$(echo \\\"\\\$MODEL_FILE\\\" | sed 's/\\.gguf\\\$//i') &&
+        echo \\\"Derived model alias: \\\$MODEL_ALIAS\\\" &&
         
         # Build command with explicit model location and derived alias string
-        CMD_ARGS=\"-m /models/\$MODEL_FILE --alias \$MODEL_ALIAS \$LLAMA_ARGS\" &&
+        CMD_ARGS=\\\"-m /models/\\\$MODEL_FILE --alias \\\$MODEL_ALIAS \\\$LLAMA_ARGS\\\" &&
         
         # Append mmproj flag conditionally if vision environment link exists
-        if [ -n \"\$MMPROJ_URL\" ]; then
-          MMPROJ_FILE=\$(basename \"\$MMPROJ_URL\") &&
-          CMD_ARGS=\"\$CMD_ARGS --mmproj /models/\$MMPROJ_FILE --no-mmproj-offload\" &&
-          echo \"Starting llama-server with vision capabilities...\" ;
+        if [ -n \\\"\\\$MMPROJ_URL\\\" ]; then
+          MMPROJ_FILE=\\\$(basename \\\"\\\$MMPROJ_URL\\\") &&
+          CMD_ARGS=\\\"\\\$CMD_ARGS --mmproj /models/\\\$MMPROJ_FILE --no-mmproj-offload\\\" &&
+          echo \\\"Starting llama-server with vision capabilities...\\\" ;
         else
-          echo \"Starting llama-server in text-only mode...\" ;
+          echo \\\"Starting llama-server in text-only mode...\\\" ;
         fi &&
         
-        exec /llama-server \$CMD_ARGS
-      "
+        exec /llama-server \\\$CMD_ARGS
+      \"
     depends_on:
       model-downloader:
         condition: service_completed_successfully
